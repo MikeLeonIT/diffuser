@@ -1,0 +1,192 @@
+Запуск Stable Diffusion локально и в облаке с помощью Diffusers и dstack
+5 мин
+11K
+Блог компании Open Data Science
+Машинное обучение
+*
+Туториал
+Перевод
+Автор оригинала: Andrey Cheptsov
+Вероятно, все уже слышали о Stable Diffusion — модели, способной создавать фотореалистичные изображения на основе текста. Благодаря библиотеке diffusers от HuggingFace, использование этой модели очень просто.
+
+Однако организация проекта и зависимостей для его запуска независимо от среды (будь то локально или в облаке), все еще может быть сложной задачей.
+
+
+В этой статье, я на простом примере расскажу о том, как решать эту проблему с помощью diffusers и dstack. Мы напишем скрипт для генерации изображений с помощью предобученной модели, взятой из удаленного репозитория, и покажем, как легко выполнять этот скрипт как локально, так и удаленно в облаке. Это ускоряет разработку и отладку локально, позволяя при необходимости переключаться в облако, запрашивая необходимые ресурсы on‑demand.
+
+Библиотека diffusers Python предоставляет простой способ доступа к различным пред-обученным диффузионным моделям, опубликованным на Hugging Face, позволяя вам легко выполнять задачи инференса.
+
+Инструмент dstack позволяет настраивать ML workflows (также иногда называемые пайплайнами) с помощью кода и запускать их локально или в облачном аккаунте, который вы настроили. Он позаботится о создании и удалении облачных ресурсов по мере выполнения.
+
+Итак, давайте приступим.
+
+Требования
+Вот список библиотек Python, которые мы будем использовать:
+
+diffusers
+transformers
+accelerate
+scipy
+ftfy
+safetensors
+Примечание: Используем библиотеку safetensors для хранения тензоров вместо pickle, по рекоммендации Hugging Face, для большей безопасности и скорости.
+
+Чтобы наши скрипты могли работать без проблем во всех средах, давайте включим их в файл stable_diffusion/requirements.txt.
+
+Вы также можете установить эти библиотеки локально:
+
+pip install -r stable_diffusion/requirements.txt
+Установим также dstack CLI, поскольку мы будем использовать его локально:
+
+pip install dstack --upgrade
+Загрузка модели
+
+В этом руководстве мы будем использовать модель runwayml/stable-diffusion-v1-5, обученную командой Runway ML. Однако на Hugging Face вы можете найти и ряд других моделей на выбор.
+
+Давайте создадим следующий файл stable_diffusion/stable_diffusion.py:
+
+import shutil
+
+from diffusers import StableDiffusionPipeline
+
+def main():
+    _, cache_folder = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5",
+                                                              return_cached_folder=True)
+    shutil.copytree(cache_folder, "./models/runwayml/stable-diffusion-v1-5", dirs_exist_ok=True)
+Примечание: По умолчанию diffusers загружает модель в свою собственную директорию, управляемую с помощью симлинков. Поскольку dstack не поддерживает симлинки в артефактах, мы копируем файлы модели в локальную папку.
+
+Чтобы запустить сценарий через dstack, сценарий должен быть определен как workflow через YAML-файл в .dstack/workflows.
+
+Давайте определим следующий файл .dstack/workflows/stable_diffusion.yaml:
+
+workflows:
+  - name: stable-diffusion
+    provider: bash
+    commands:
+      - pip install -r stable_diffusion/requirements.txt
+      - python stable_diffusion/stable_diffusion.py
+    artifacts:
+      - path: ./models
+    resources:
+      memory: 16GB
+Теперь workflow может быть запущен локально или в удаленной среде через dstack CLI.
+
+Примечание: Прежде чем запускать workflow через dstack, убедитесь, что в репозитории проекта настроена удаленная ветка Git, и вызовите команду dstack init, которая обеспечит доступ dstack к репозиторию.
+
+Вот как запустить workflow локально:
+
+dstack run stable-diffusion
+Когда вы запустите его, dstack выполнит скрипт и сохранит папку models как артефакт. После этого вы можете повторно использовать артефакт в других workflows.
+
+Присоединение интерактивной IDE
+
+Иногда, прежде чем запустить workflows, вы можете захотеть выполнить код в интерактивном режиме, например, с помощью IDE или ноутбука.
+
+Посмотрите на следующий пример:
+
+workflows:
+  - name: code-stable
+    provider: code
+    deps:
+      - workflow: stable-diffusion
+    setup:
+      - pip install -r stable_diffusion/requirements.txt
+    resources:
+      memory: 16GB
+Как вы видите, code-stable ссылается на stable-diffusion как на зависимость. Запустите его.
+
+Если вы это сделаете, в выводе вы увидите URL:
+
+Он открывает VS Code, прикрепленный к вашему workflow, со всем настроенным: кодом, моделью и средой Python.
+
+
+Генерация изображений по тексту
+
+Давайте напишем скрипт, который генерирует изображения, используя предварительно обученную модель и заданный текст.
+
+Вот пример файла stable_diffusion/prompt_stable.py:
+
+import argparse
+from pathlib import Path
+
+import torch
+from diffusers import StableDiffusionPipeline
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-P", "--prompt", action='append', required=True)
+    args = parser.parse_args()
+
+    pipe = StableDiffusionPipeline.from_pretrained("./models/runwayml/stable-diffusion-v1-5", local_files_only=True)
+    if torch.cuda.is_available():
+        pipe.to("cuda")
+    images = pipe(args.prompt).images
+
+    output = Path("./output")
+    output.mkdir(parents=True, exist_ok=True)
+    for i in range(len(images)):
+        images[i].save(output / f"{i}.png")
+Скрипт загружает модель из локальной папки ./models/runwayml/stable-diffusion-v1-5, генерирует изображения на основе заданного текста и сохраняет полученные изображения в локальной папке output.
+
+Чтобы иметь возможность запускать его через dstack, давайте определим его в .dstack/workflows/stable_diffusion.yaml:
+
+workflows:
+  - name: prompt-stable
+    provider: bash
+    deps:
+      - workflow: stable-diffusion
+    commands:
+      - pip install -r stable_diffusion/requirements.txt
+      - python stable_diffusion/prompt_stable.py ${{ run.args }}
+    artifacts:
+      - path: ./output
+    resources:
+      memory: 16GB
+Когда вы запустите этот workflow, dstack смонтирует артефакты stable‑diffusion в рабочую директорию. Таким образом, модель, которая была загружена ранее, окажется в локальной папке ./models/runwayml/stable-diffusion-v1-5.
+
+Примечание: Команда dstack run позволяет передавать аргументы workflow через ${{ run.args }}.
+
+Давайте запустим workflow локально:
+
+dstack run prompt-stable -P "cats in hats"
+Примечание: Выходные артефакты локального запуска хранятся в папке ~/.dstack/artifacts.
+
+
+Настройка AWS в качестве remote
+По умолчанию workflows в dstack запускаются локально. Однако у вас есть возможность настроить remote. Например, вы можете настроить свою учетную запись AWS как удаленную для запуска рабочих процессов.
+
+Чтобы настроить remote, выполните следующую команду:
+
+dstack config
+Эта команда предложит вам выбрать профиль AWS, регион AWS для выполнения workflows и S3 bucket для хранения артефактов.
+
+AWS profile: default
+AWS region: eu-west-1
+S3 bucket: dstack-142421590066-eu-west-1
+EC2 subnet: none
+Примечание: В настоящее время dstack поддерживает только AWS в качестве удаленного бэкенда. Поддержка GCP и Azure ожидается в одном из ближайших релизов.
+
+Удаленный запуск
+После настройки удаленного бэкенда вы можете использовать флаг --remote в команде dstack run для удаленного запуска workflows.
+
+Давайте сначала запустим stable-diffusion:
+
+dstack run stable-diffusion --remote
+Примечание: Когда вы запускаете workflow удаленно, dstack автоматически создает ресурсы в настроенном облаке, сохраняет артефакты и освобождает их по завершении.
+
+Когда вы запускаете workflow удаленно, вы можете настроить необходимые ресурсы для запуска рабочих процессов: либо через свойство resources в YAML, либо через аргументы команды dstack run, такие как --gpu, --gpu-name и т.д.
+
+Давайте запустим prompt-stable удаленно и попросим использовать GPU:
+
+dstack run prompt-stable --remote --gpu 1 -P "cats in hats"
+Примечание: По умолчанию dstack выбирает самую дешевую доступную машину, соответствующую требованиям к ресурсам. Например, в AWS, если вы запросите один GPU, он будет использовать p2.xlarge инстанс с GPU NVIDIA Tesla K80.
+
+Заключение
+Если эта статья показалась вам интересной, вы можете углубиться в эту тему, изучив документацию по diffusers и dstack.
+
+Исходный код можно найти на GitHub.
+
+В одной из следующих статей мы углубимся не только в генерацию изображений, но и в файнтьюнинг Stable Diffusion.
+
+Теги: stablediffusionmachinelearninghuggingfacedstack
+Хабы: Блог компании Open Data ScienceМашинное обучение

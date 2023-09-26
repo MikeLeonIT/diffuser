@@ -1,0 +1,7 @@
+pip install diffusers
+            transformers
+            accelerate
+            scipy
+            ftfy
+            safetensors
+            dstack --upgrade
